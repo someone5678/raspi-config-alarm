@@ -584,24 +584,29 @@ do_change_timezone() {
 
 get_wifi_country() {
   CODE=${1:-0}
-  if [ -e /etc/default/crda ]; then
-    . /etc/default/crda
-  elif systemctl -q is-active dhcpcd; then
-    REGDOMAIN="$(wpa_cli get country | tail -n 1)"
-  else
-    REGDOMAIN="$(iw reg get | sed -n "0,/country/s/^country \(.\+\):.*$/\1/p")"
-  fi
-  if [ -z "$REGDOMAIN" ] \
-     || ! grep -q "^${REGDOMAIN}[[:space:]]" /usr/share/zoneinfo/iso3166.tab; then
+  IFACE="$(list_valid_wlan_interfaces | head -n 1)"
+  if [ -z "$IFACE" ]; then
     return 1
   fi
-  if [ "$CODE" = 0 ]; then
-    echo "$REGDOMAIN"
+
+  wpa_cli -i "$IFACE" save_config > /dev/null 2>&1
+  COUNTRY="$(wpa_cli -i "$IFACE" get country)"
+  if [ "$COUNTRY" = "FAIL" ]; then
+    return 1
+  fi
+  if [ $CODE = 0 ]; then
+    echo "$COUNTRY"
   fi
   return 0
 }
 
 do_wifi_country() {
+  IFACE="$(list_valid_wlan_interfaces | head -n 1)"
+  if [ -z "$IFACE" ]; then
+    return 1
+  fi
+
+  oIFS="$IFS"
   if [ "$INTERACTIVE" = True ]; then
     value=$(sed '/^#/d' /usr/share/zoneinfo/iso3166.tab | tr '\t\n' '/')
     oIFS="$IFS"
@@ -2398,8 +2403,37 @@ list_wlan_interfaces() {
   done
 }
 
+list_valid_wlan_interfaces() {
+  IFACES="$(list_wlan_interfaces)"
+  VALID_IFACE_FOUND=""
+  ERROR_MESSAGE=""
+  if [ -z "$IFACES" ]; then
+    ERROR_MESSAGE="No wireless interface found"
+  fi
+
+  for IFACE in $IFACES; do
+    if ! wpa_cli -i "$IFACE" status > /dev/null 2>&1; then
+      ERROR_MESSAGE="Interface could not communicate with wpa_supplicant"
+      continue
+    fi
+    VALID_IFACE_FOUND=1
+    echo "$IFACE"
+  done
+
+  if [ -z "$VALID_IFACE_FOUND" ] && [ ! -z "$ERROR_MESSAGE" ] && [ "$INTERACTIVE" = True ]; then
+    whiptail --msgbox "${ERROR_MESSAGE}" 20 60
+  fi
+}
+
 do_wifi_ssid_passphrase() {
   RET=0
+  IFACE_LIST="$(list_valid_wlan_interfaces)"
+  IFACE="$(echo "$IFACE_LIST" | head -n 1)"
+
+  if [ -z "$IFACE" ]; then
+    return 1
+  fi
+
   if [ "$INTERACTIVE" = True ] && [ -z "$(get_wifi_country)" ]; then
     do_wifi_country
   fi
